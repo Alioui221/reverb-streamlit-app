@@ -8,11 +8,11 @@ import streamlit as st
 REVERB_BASE = "https://api.reverb.com/api"
 
 st.set_page_config(page_title="Reverb Bulk Re-List", layout="wide")
-st.title("Reverb Link → Bulk Re-List (v3)")
+st.title("Reverb Link → Bulk Re-List (Draft, no inventory)")
 
 # ---------------- UI ----------------
 token = st.text_input("Reverb Personal Token (Bearer)", type="password")
-shipping_profile_id = st.text_input("Shipping Profile ID (اختياري ولكن مهم)")
+shipping_profile_id = st.text_input("Shipping Profile ID (اختياري)")
 
 colA, colB, colC = st.columns(3)
 with colA:
@@ -20,7 +20,7 @@ with colA:
 with colB:
     dry_run = st.checkbox("Dry-run (ما كينش إنشاء)", value=False)
 with colC:
-    inventory = st.number_input("Inventory", min_value=0, value=1, step=1)
+    max_photos = st.number_input("Max photos", min_value=1, value=12, step=1)
 
 links_text = st.text_area(
     "Paste Reverb listing links (one per line)",
@@ -28,7 +28,7 @@ links_text = st.text_area(
     placeholder="https://reverb.com/item/94336095-...\nhttps://reverb.com/item/94644803-..."
 )
 
-st.caption("⚠️ إذا بان لك 'must be in good standing' هادي من الحساب/Shop، ماشي من الصور.")
+st.caption("This version creates DRAFT listings without inventory to avoid condition restrictions.")
 
 # ---------------- Helpers ----------------
 def headers(tok: str) -> dict:
@@ -64,23 +64,14 @@ def get_listing(tok: str, listing_id: str):
     return http_json("GET", f"{REVERB_BASE}/listings/{listing_id}", tok)
 
 def pick_photo_url(ph: dict) -> str | None:
-    """
-    Reverb listing photos often come as objects.
-    We'll try multiple common shapes:
-    - {"_links":{"full":{"href":...}}}
-    - {"_links":{"original":{"href":...}}}
-    - {"url":...} / {"full":...} / {"original":...} / {"large_crop":...}
-    """
     if not isinstance(ph, dict):
         return None
 
-    # Direct keys
     for k in ["url", "full", "original", "large", "large_crop", "medium", "small"]:
         v = ph.get(k)
         if isinstance(v, str) and v.startswith("http"):
             return v
 
-    # HAL links
     links = ph.get("_links")
     if isinstance(links, dict):
         for lk in ["full", "original", "large", "large_crop"]:
@@ -89,12 +80,10 @@ def pick_photo_url(ph: dict) -> str | None:
                 href = obj.get("href")
                 if isinstance(href, str) and href.startswith("http"):
                     return href
-
     return None
 
-def extract_photo_urls(src: dict, max_photos: int = 12) -> list[str]:
+def extract_photo_urls(src: dict, max_count: int) -> list[str]:
     urls: list[str] = []
-
     photos = src.get("photos")
     if isinstance(photos, list):
         for ph in photos:
@@ -105,25 +94,22 @@ def extract_photo_urls(src: dict, max_photos: int = 12) -> list[str]:
                 if u:
                     urls.append(u)
 
-    # De-dup keep order
     seen = set()
     out = []
     for u in urls:
         if u not in seen:
             out.append(u)
             seen.add(u)
-        if len(out) >= max_photos:
+        if len(out) >= max_count:
             break
     return out
 
 def normalize_categories(src: dict) -> list[dict]:
-    # Docs use: "categories": [{"uuid": "..."}]
     cats = []
     if isinstance(src.get("categories"), list):
         for c in src["categories"]:
             if isinstance(c, dict) and c.get("uuid"):
                 cats.append({"uuid": c["uuid"]})
-    # Alternative: category_uuids
     if not cats and isinstance(src.get("category_uuids"), list):
         for u in src["category_uuids"]:
             if isinstance(u, str) and u.strip():
@@ -137,24 +123,18 @@ def normalize_condition(src: dict) -> dict | None:
     cu = src.get("condition_uuid")
     if isinstance(cu, str) and cu.strip():
         return {"uuid": cu.strip()}
+    slug = src.get("condition_slug")
+    if isinstance(slug, str) and slug.strip():
+        return {"uuid": slug.strip().lower()}
     return None
 
 def build_create_payload(src: dict) -> tuple[dict, list[str]]:
-    """
-    Build payload exactly like Reverb docs:
-    - make, model, categories[{uuid}], condition{uuid}
-    - photos: [ "url1", "url2" ]  (IMPORTANT)
-    - price {amount,currency}, title, description
-    - shipping_profile_id optional
-    - has_inventory/inventory
-    """
     title = (src.get("title") or "").strip()
     description = (src.get("description") or "").strip()
 
     make = (src.get("make") or "").strip()
     model = (src.get("model") or "").strip()
 
-    # price
     price = src.get("price") or {}
     amount = price.get("amount")
     currency = price.get("currency") or "USD"
@@ -163,18 +143,15 @@ def build_create_payload(src: dict) -> tuple[dict, list[str]]:
 
     cats = normalize_categories(src)
     cond = normalize_condition(src)
+    photos = extract_photo_urls(src, max_count=int(max_photos))
 
-    photos = extract_photo_urls(src)
-
+    # ✅ NO inventory at all (Draft-style payload)
     payload = {
         "title": title,
         "description": description,
         "price": {"amount": str(amount), "currency": currency},
-        "has_inventory": True,
-        "inventory": int(inventory),
     }
 
-    # Reverb requires make/model for publishable drafts (docs)
     if make:
         payload["make"] = make
     if model:
@@ -184,7 +161,7 @@ def build_create_payload(src: dict) -> tuple[dict, list[str]]:
     if cond:
         payload["condition"] = cond
 
-    # THIS is the important part (photos as list of strings)
+    # IMPORTANT: photos must be list of URL strings
     if photos:
         payload["photos"] = photos
 
@@ -194,7 +171,6 @@ def build_create_payload(src: dict) -> tuple[dict, list[str]]:
     return payload, photos
 
 def create_listing(tok: str, payload: dict):
-    # Official create endpoint
     return http_json("POST", f"{REVERB_BASE}/listings", tok, payload=payload)
 
 # ---------------- Parse links ----------------
@@ -208,6 +184,7 @@ st.dataframe(df, use_container_width=True)
 if st.button("Fetch + Re-List", type="primary", disabled=not (token and len(raw_links) > 0)):
     valid = df[df["listing_id"].notna() & (df["listing_id"] != "")]
     total = len(valid)
+
     if total == 0:
         st.error("ما لقيتش listing_id ف الروابط (خاص /item/<digits>)")
         st.stop()
@@ -240,7 +217,6 @@ if st.button("Fetch + Re-List", type="primary", disabled=not (token and len(raw_
 
         payload, photo_urls = build_create_payload(src)
 
-        # Show quick debug for first item
         if i == 1:
             st.write("Debug (first item): photos extracted =", len(photo_urls))
             if len(photo_urls) > 0:
