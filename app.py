@@ -34,6 +34,7 @@ with colC:
 def headers(tok: str) -> dict:
     return {
         "Accept": "application/hal+json",
+        "Accept-Version": "3.0",
         "Content-Type": "application/json",
         "Authorization": f"Bearer {tok}",
     }
@@ -57,10 +58,9 @@ def extract_listing_id(url: str) -> str | None:
         pass
     return None
 
-def get_listing_public(listing_id: str) -> tuple[int, dict]:
-    # Public listing fetch endpoint (common pattern):
+def get_listing_public(tok: str, listing_id: str) -> tuple[int, dict]:
     url = f"{REVERB_BASE}/listings/{listing_id}"
-    r = requests.get(url, headers={"Accept": "application/hal+json"}, timeout=60)
+    r = requests.get(url, headers=headers(tok), timeout=60)
     try:
         data = r.json()
     except:
@@ -167,7 +167,7 @@ if st.button("Fetch + Re-List", type="primary", disabled=not can_run):
         listing_id = row["listing_id"]
         box.info(f"[{i}/{total}] Fetching: {listing_id}")
 
-        code_get, src = get_listing_public(listing_id)
+       code_get, src = get_listing_public(token, listing_id)
 
         if code_get >= 400:
             results.append({
@@ -233,4 +233,5 @@ if st.button("Fetch + Re-List", type="primary", disabled=not can_run):
         data=res_df.to_csv(index=False).encode("utf-8"),
         file_name="reverb_relist_results.csv",
         mime="text/csv"
+
     )
