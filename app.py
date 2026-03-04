@@ -168,7 +168,6 @@ if st.button("Fetch + Re-List", type="primary", disabled=not can_run):
         box.info(f"[{i}/{total}] Fetching: {listing_id}")
 
        code_get, src = get_listing_public(token, listing_id)
-
         if code_get >= 400:
             results.append({
                 "link": link,
@@ -235,3 +234,4 @@ if st.button("Fetch + Re-List", type="primary", disabled=not can_run):
         mime="text/csv"
 
     )
+
